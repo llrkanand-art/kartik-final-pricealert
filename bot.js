@@ -5,7 +5,7 @@ const fs = require("fs-extra");
 const path = require("path");
 const http = require("http");
 
-const BOT_TOKEN = "8980239383:AAFwZVEzP0lTYoIG3-HYig4xTz47L1n0lXY";
+const BOT_TOKEN = "8499624263:AAEQuPqkuqzKbb8Bq6P8jttROkqK9zGq0Lg";
 const ADMIN_ID = 7485181331;
 const DATA_FILE = path.join(__dirname, "data.json");
 const CHECK_INTERVAL = 15000;
