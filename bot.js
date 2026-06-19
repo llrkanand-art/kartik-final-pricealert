@@ -13,7 +13,7 @@ const CHECK_INTERVAL = 15000;
 // ─── Keep-Alive Server ────────────────────────────────────────────────────────
 http.createServer((req, res) => res.end("Bot is alive!")).listen(process.env.PORT || 3000);
 
-// ─── Bot Init with 409 Fix ────────────────────────────────────────────────────
+// ─── Bot Init ─────────────────────────────────────────────────────────────────
 const bot = new TelegramBot(BOT_TOKEN, {
   polling: {
     interval: 300,
@@ -62,9 +62,10 @@ async function scrapeFlipkart(url) {
       if (t && t.length > 3) { name = t.substring(0, 80); break; }
     }
 
-    // ── Price (JSON-LD first, then CSS fallback) ──────────────────────────
+    // ── Price ─────────────────────────────────────────────────────────────
     let price = null;
 
+    // Method 1: JSON-LD
     $('script[type="application/ld+json"]').each((_, el) => {
       if (price) return;
       try {
@@ -77,6 +78,7 @@ async function scrapeFlipkart(url) {
       } catch (_) {}
     });
 
+    // Method 2: CSS Classes
     if (!price) {
       const priceClasses = [
         "div.Nx9bqj.CxhGGd", "div.Nx9bqj",
@@ -95,6 +97,7 @@ async function scrapeFlipkart(url) {
       }
     }
 
+    // Method 3: JSON in page
     if (!price) {
       const matches = data.match(/"price"\s*:\s*"?([\d,]+)"?/g);
       if (matches) {
@@ -108,6 +111,7 @@ async function scrapeFlipkart(url) {
       }
     }
 
+    // Method 4: Regex fallback
     if (!price) {
       const m = data.match(/₹\s?([\d,]{4,})/);
       if (m) price = parseInt(m[1].replace(/,/g, ""));
@@ -214,7 +218,6 @@ bot.on("callback_query", async (q) => {
   const mid = q.message.message_id;
   bot.answerCallbackQuery(q.id).catch(() => {});
 
-  // ── Approve ───────────────────────────────────────────────────────────
   if (cb.startsWith("approve_")) {
     if (parseInt(uid) !== ADMIN_ID) return;
     const target = cb.split("_")[1];
@@ -229,7 +232,6 @@ bot.on("callback_query", async (q) => {
     return;
   }
 
-  // ── Reject ────────────────────────────────────────────────────────────
   if (cb.startsWith("reject_")) {
     if (parseInt(uid) !== ADMIN_ID) return;
     const target = cb.split("_")[1];
@@ -241,7 +243,6 @@ bot.on("callback_query", async (q) => {
     return;
   }
 
-  // ── Admin Pending ─────────────────────────────────────────────────────
   if (cb === "admin_pending") {
     if (parseInt(uid) !== ADMIN_ID) return;
     if (!Object.keys(db.pending).length)
@@ -262,7 +263,6 @@ bot.on("callback_query", async (q) => {
     });
   }
 
-  // ── Admin Approved ────────────────────────────────────────────────────
   if (cb === "admin_approved") {
     if (parseInt(uid) !== ADMIN_ID) return;
     const text = db.approved.length
@@ -274,25 +274,21 @@ bot.on("callback_query", async (q) => {
     });
   }
 
-  // ── Admin Back ────────────────────────────────────────────────────────
   if (cb === "admin_back") {
     if (parseInt(uid) !== ADMIN_ID) return;
     return bot.editMessageText("👑 *Admin Panel*",
       { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...adminMenu });
   }
 
-  // ── User Access Check ─────────────────────────────────────────────────
   if (!db.approved.includes(uid) && parseInt(uid) !== ADMIN_ID)
     return bot.answerCallbackQuery(q.id, { text: "⛔ Access denied.", show_alert: true });
 
-  // ── Add Track ─────────────────────────────────────────────────────────
   if (cb === "add_track") {
     waitingForUrl.add(uid);
     return bot.editMessageText("🔗 *Product URL Bhejo*\n\nFlipcart product ka link paste karo:",
       { chat_id: cid, message_id: mid, parse_mode: "Markdown" });
   }
 
-  // ── List Tracks ───────────────────────────────────────────────────────
   if (cb === "list_tracks") {
     const ut = db.tracks[uid] || [];
     if (!ut.length)
@@ -308,7 +304,6 @@ bot.on("callback_query", async (q) => {
       { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...mainMenu });
   }
 
-  // ── Remove Menu ───────────────────────────────────────────────────────
   if (cb === "remove_menu") {
     const ut = db.tracks[uid] || [];
     if (!ut.length)
@@ -325,7 +320,6 @@ bot.on("callback_query", async (q) => {
     });
   }
 
-  // ── Delete Track ──────────────────────────────────────────────────────
   if (cb.startsWith("del_")) {
     const idx = parseInt(cb.split("_")[1]);
     const ut  = db.tracks[uid] || [];
@@ -338,7 +332,6 @@ bot.on("callback_query", async (q) => {
     }
   }
 
-  // ── Back Main ─────────────────────────────────────────────────────────
   if (cb === "back_main") {
     return bot.editMessageText("✅ *Flipkart Price Alert Bot*\n\nKya track karna hai?",
       { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...mainMenu });
@@ -400,7 +393,6 @@ async function checkPrices() {
         const oldOffers  = track.offers || [];
         const oldStock   = track.inStock;
 
-        // Price change
         if (newPrice && oldPrice && newPrice !== oldPrice) {
           const diff  = oldPrice - newPrice;
           const arrow = diff > 0 ? "📉" : "📈";
@@ -414,7 +406,6 @@ async function checkPrices() {
           track.price = newPrice;
         }
 
-        // Stock change
         if (oldStock !== null && oldStock !== undefined && newStock !== oldStock) {
           alertParts.push(
             newStock
@@ -424,7 +415,6 @@ async function checkPrices() {
           track.inStock = newStock;
         }
 
-        // Offers change
         const addedOffers   = newOffers.filter(o => !oldOffers.includes(o));
         const removedOffers = oldOffers.filter(o => !newOffers.includes(o));
         if (addedOffers.length) {
