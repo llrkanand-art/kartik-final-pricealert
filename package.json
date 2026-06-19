@@ -1,7 +1,6 @@
 {
   "name": "fk-price-alert-bot",
   "version": "1.0.0",
-  "description": "Flipkart Price Alert Telegram Bot",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
@@ -10,7 +9,6 @@
     "node-telegram-bot-api": "^0.66.0",
     "axios": "^1.6.0",
     "cheerio": "^1.0.0",
-    "node-cron": "^3.0.3",
     "fs-extra": "^11.2.0"
   }
 }
