@@ -5,8 +5,9 @@ const fs = require("fs-extra");
 const path = require("path");
 const http = require("http");
 
-const BOT_TOKEN = "8499624263:AAEQuPqkuqzKbb8Bq6P8jttROkqK9zGq0Lg";
-const ADMIN_ID = 7485181331;
+// ⚠️ APNA BOT TOKEN IN ENVIRONMENT VARIABLES ME RAKHEIN, HARDCODE NA KAREIN
+const BOT_TOKEN = process.env.BOT_TOKEN || "8499624263:AAEQuPqkuqzKbb8Bq6P8jttROkqK9zGq0Lg";
+const ADMIN_ID = "7485181331"; // Handle as String to prevent type mismatch
 const DATA_FILE = path.join(__dirname, "data.json");
 const CHECK_INTERVAL = 15000;
 
@@ -45,10 +46,11 @@ async function scrapeFlipkart(url) {
     const cleanUrl = url.split("?")[0];
     const { data } = await axios.get(cleanUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept-Language": "en-IN,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
       },
       timeout: 20000,
     });
@@ -65,7 +67,6 @@ async function scrapeFlipkart(url) {
     // ── Price ─────────────────────────────────────────────────────────────
     let price = null;
 
-    // Method 1: JSON-LD
     $('script[type="application/ld+json"]').each((_, el) => {
       if (price) return;
       try {
@@ -78,15 +79,8 @@ async function scrapeFlipkart(url) {
       } catch (_) {}
     });
 
-    // Method 2: CSS Classes
     if (!price) {
-      const priceClasses = [
-        "div.Nx9bqj.CxhGGd", "div.Nx9bqj",
-        "div._30jeq3._16Jk6d", "div._30jeq3",
-        "div.aBc1ts", "div.CEmiEU", "div._16Jk6d",
-        "div.dyC4hf", "div._25b18c ._30jeq3",
-        "div.UOCQB1 ._30jeq3", "span._1_WHN1", "div._3tbKJL",
-      ];
+      const priceClasses = ["div.Nx9bqj.CxhGGd", "div.Nx9bqj", "div._30jeq3._16Jk6d", "div._30jeq3"];
       for (const sel of priceClasses) {
         const el = $(sel).first();
         if (el.length) {
@@ -97,52 +91,45 @@ async function scrapeFlipkart(url) {
       }
     }
 
-    // Method 3: JSON in page
-    if (!price) {
-      const matches = data.match(/"price"\s*:\s*"?([\d,]+)"?/g);
-      if (matches) {
-        for (const m of matches) {
-          const num = m.match(/([\d,]+)/);
-          if (num) {
-            const p = parseInt(num[1].replace(/,/g, ""));
-            if (p > 100 && p < 10000000) { price = p; break; }
-          }
-        }
-      }
-    }
-
-    // Method 4: Regex fallback
-    if (!price) {
-      const m = data.match(/₹\s?([\d,]{4,})/);
-      if (m) price = parseInt(m[1].replace(/,/g, ""));
-    }
-
     // ── Stock Status ──────────────────────────────────────────────────────
     let inStock = true;
     const bodyText = $("body").text().toLowerCase();
     for (const txt of ["currently unavailable", "out of stock", "notify me", "sold out"]) {
       if (bodyText.includes(txt)) { inStock = false; break; }
     }
-    $('script[type="application/ld+json"]').each((_, el) => {
-      try {
-        const json = JSON.parse($(el).html());
-        if ((json.offers?.availability || "").includes("OutOfStock")) inStock = false;
-      } catch (_) {}
-    });
 
-    // ── Bank Offers ───────────────────────────────────────────────────────
+    // ── Bank Offers (Fixed Selectors & Text-parsing fallback) ─────────────
     const offers = [];
     const seen = new Set();
-    $("li, div._3lK0oN, div.yBYrE2").each((_, el) => {
+
+    // Updated selectors for newer Flipkart markup
+    $("li, div._3lK0oN, div.yBYrE2, span.Y1vEsn, li.XscZ69").each((_, el) => {
       const txt = $(el).text().replace(/\s+/g, " ").trim();
       if (
         /bank|hdfc|sbi|icici|axis|kotak|rbl|yes bank|cashback|discount|emi|instant|offer/i.test(txt) &&
-        txt.length > 15 && txt.length < 250 && !seen.has(txt)
+        txt.length > 12 && txt.length < 250
       ) {
-        seen.add(txt);
-        if (offers.length < 8) offers.push(txt.substring(0, 180));
+        // Cleaning extra words if any
+        let cleanText = txt.replace(/T&C/g, "").trim();
+        if (!seen.has(cleanText) && offers.length < 8) {
+          seen.add(cleanText);
+          offers.push(cleanText.substring(0, 180));
+        }
       }
     });
+
+    // Fallback: Agar selectors se ni mila toh raw regex content se offers find karega
+    if (offers.length === 0) {
+      const regexOffers = data.match(/(([1-9][0-9]%|Rs\.\s?\d+)\sInstant\sDiscount\son\s[a-zA-Z\s]+Bank)/gi);
+      if (regexOffers) {
+        regexOffers.forEach(off => {
+          if (!seen.has(off) && offers.length < 5) {
+            seen.add(off);
+            offers.push(off);
+          }
+        });
+      }
+    }
 
     return { name, price, offers, inStock };
   } catch (err) {
@@ -167,6 +154,7 @@ const adminMenu = {
     inline_keyboard: [
       [{ text: "📥 Pending Requests", callback_data: "admin_pending" }],
       [{ text: "✅ Approved Users",   callback_data: "admin_approved" }],
+      [{ text: "📱 Go to User Menu",  callback_data: "back_main" }], // Fixed: Admin users can also access tracking menu
     ],
   },
 };
@@ -178,14 +166,19 @@ bot.onText(/\/start/, async (msg) => {
   const uid  = String(msg.from.id);
   const user = msg.from;
 
-  if (parseInt(uid) === ADMIN_ID) {
-    return bot.sendMessage(ADMIN_ID, "👑 *Admin Panel*\n\nWelcome back, Boss!",
+  // Strict String Comparison for Admin
+  if (uid === ADMIN_ID) {
+    if (!db.approved.includes(uid)) {
+      db.approved.push(uid);
+      persist();
+    }
+    return bot.sendMessage(ADMIN_ID, "👑 *Admin Panel*\n\nWelcome back, Boss! Aapke paas control access aur tracking features dono hain.",
       { parse_mode: "Markdown", ...adminMenu });
   }
 
   if (db.approved.includes(uid)) {
     return bot.sendMessage(uid,
-      "✅ *Flipkart Price Alert Bot*\n\nApka account approved hai! Kya track karna hai?",
+      "✅ *Flipkart Price Alert Bot*\n\nAapka account approved hai! Kya track karna hai?",
       { parse_mode: "Markdown", ...mainMenu });
   }
 
@@ -219,7 +212,7 @@ bot.on("callback_query", async (q) => {
   bot.answerCallbackQuery(q.id).catch(() => {});
 
   if (cb.startsWith("approve_")) {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     const target = cb.split("_")[1];
     if (!db.approved.includes(target)) db.approved.push(target);
     delete db.pending[target];
@@ -233,7 +226,7 @@ bot.on("callback_query", async (q) => {
   }
 
   if (cb.startsWith("reject_")) {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     const target = cb.split("_")[1];
     delete db.pending[target];
     persist();
@@ -244,7 +237,7 @@ bot.on("callback_query", async (q) => {
   }
 
   if (cb === "admin_pending") {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     if (!Object.keys(db.pending).length)
       return bot.editMessageText("📭 No pending requests.", { chat_id: cid, message_id: mid, ...adminMenu });
     let text = "📥 *Pending Requests:*\n\n";
@@ -264,7 +257,7 @@ bot.on("callback_query", async (q) => {
   }
 
   if (cb === "admin_approved") {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     const text = db.approved.length
       ? "✅ *Approved Users:*\n\n" + db.approved.map(u => `\`${u}\``).join("\n")
       : "📭 No approved users yet.";
@@ -275,17 +268,17 @@ bot.on("callback_query", async (q) => {
   }
 
   if (cb === "admin_back") {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     return bot.editMessageText("👑 *Admin Panel*",
       { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...adminMenu });
   }
 
-  if (!db.approved.includes(uid) && parseInt(uid) !== ADMIN_ID)
+  if (!db.approved.includes(uid) && uid !== ADMIN_ID)
     return bot.answerCallbackQuery(q.id, { text: "⛔ Access denied.", show_alert: true });
 
   if (cb === "add_track") {
     waitingForUrl.add(uid);
-    return bot.editMessageText("🔗 *Product URL Bhejo*\n\nFlipcart product ka link paste karo:",
+    return bot.editMessageText("🔗 *Product URL Bhejo*\n\nFlipkart product ka link paste karo:",
       { chat_id: cid, message_id: mid, parse_mode: "Markdown" });
   }
 
@@ -298,7 +291,7 @@ bot.on("callback_query", async (q) => {
     ut.forEach((t, i) => {
       const ps    = t.price ? `₹${t.price.toLocaleString("en-IN")}` : "N/A";
       const stock = t.inStock === false ? "❌ Out of Stock" : "✅ In Stock";
-      text += `${i + 1}. *${t.name}*\n   💰 Price: ${ps} | ${stock}\n\n`;
+      text += `${i + 1}. *${t.name}*\n    💰 Price: ${ps} | ${stock}\n\n`;
     });
     return bot.editMessageText(text,
       { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...mainMenu });
@@ -333,8 +326,9 @@ bot.on("callback_query", async (q) => {
   }
 
   if (cb === "back_main") {
+    const keyboard = (uid === ADMIN_ID) ? { reply_markup: { inline_keyboard: [...mainMenu.reply_markup.inline_keyboard, [{ text: "👑 Admin Panel", callback_data: "admin_back" }]] } } : mainMenu;
     return bot.editMessageText("✅ *Flipkart Price Alert Bot*\n\nKya track karna hai?",
-      { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...mainMenu });
+      { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...keyboard });
   }
 });
 
@@ -344,7 +338,7 @@ bot.on("message", async (msg) => {
   const uid  = String(msg.from.id);
   const text = msg.text.trim();
 
-  if (!db.approved.includes(uid) && parseInt(uid) !== ADMIN_ID)
+  if (!db.approved.includes(uid) && uid !== ADMIN_ID)
     return bot.sendMessage(uid, "⛔ Access denied. Admin approval pending.");
 
   if (waitingForUrl.has(uid)) {
@@ -352,12 +346,11 @@ bot.on("message", async (msg) => {
       return bot.sendMessage(uid, "❌ Valid Flipkart URL bhejo bhai!");
 
     waitingForUrl.delete(uid);
-    const loadMsg = await bot.sendMessage(uid, "⏳ Product check ho raha hai...");
+    const loadMsg = await bot.sendMessage(uid, "⏳ Product aur Offers fetch ho rahe hain...");
     const { name, price, offers, inStock } = await scrapeFlipkart(text);
 
     if (!name)
-      return bot.editMessageText("❌ Product fetch nahi ho paya. URL check karo.",
-        { chat_id: uid, message_id: loadMsg.message_id });
+      return bot.sendMessage(uid, "❌ Product fetch nahi ho paya. URL check karo ya thodi der baad try karo.");
 
     if (!db.tracks[uid]) db.tracks[uid] = [];
     db.tracks[uid].push({ url: text, name, price, offers, inStock });
@@ -367,15 +360,19 @@ bot.on("message", async (msg) => {
     const stockStr = inStock === false ? "❌ Out of Stock" : "✅ In Stock";
     const offerStr = offers.length
       ? offers.map(o => `• ${o}`).join("\n")
-      : "No bank offers found";
+      : "⚠️ Koi Bank Offer parse nahi ho paya (Flipkart dynamic layout blocks directly scraping text).";
 
-    return bot.editMessageText(
-      `✅ *Tracking Started!*\n\n📦 ${name}\n💰 Current Price: *${ps}*\n📦 Stock: ${stockStr}\n\n🏦 Bank Offers:\n${offerStr}\n\n_Har 15 sec mein check hoga!_`,
-      { chat_id: uid, message_id: loadMsg.message_id, parse_mode: "Markdown", ...mainMenu }
+    const keyboard = (uid === ADMIN_ID) ? { reply_markup: { inline_keyboard: [...mainMenu.reply_markup.inline_keyboard, [{ text: "👑 Admin Panel", callback_data: "admin_back" }]] } } : mainMenu;
+
+    return bot.sendMessage(
+      uid,
+      `✅ *Tracking Started!*\n\n📦 *${name}*\n💰 Current Price: *${ps}*\n📦 Stock: ${stockStr}\n\n🏦 *Bank Offers Found:*\n${offerStr}\n\n_Har 15 sec mein price change check hoga!_`,
+      { parse_mode: "Markdown", ...keyboard }
     );
   }
 
-  bot.sendMessage(uid, "👋 Menu ke liye /start use karo.", mainMenu);
+  const keyboard = (uid === ADMIN_ID) ? { reply_markup: { inline_keyboard: [...mainMenu.reply_markup.inline_keyboard, [{ text: "👑 Admin Panel", callback_data: "admin_back" }]] } } : mainMenu;
+  bot.sendMessage(uid, "👋 Menu ke liye buttons use karo ya /start refresh karo.", keyboard);
 });
 
 // ─── Background Checker ───────────────────────────────────────────────────────
@@ -399,9 +396,9 @@ async function checkPrices() {
           const word  = diff > 0 ? "SASTA HO GAYA 🥳" : "MAHANGA HO GAYA 😬";
           alertParts.push(
             `${arrow} *Price ${word}!*\n` +
-            `   Old: ₹${oldPrice.toLocaleString("en-IN")}\n` +
-            `   New: ₹${newPrice.toLocaleString("en-IN")}\n` +
-            `   Change: ₹${Math.abs(diff).toLocaleString("en-IN")}`
+            `    Old: ₹${oldPrice.toLocaleString("en-IN")}\n` +
+            `    New: ₹${newPrice.toLocaleString("en-IN")}\n` +
+            `    Change: ₹${Math.abs(diff).toLocaleString("en-IN")}`
           );
           track.price = newPrice;
         }
@@ -416,13 +413,8 @@ async function checkPrices() {
         }
 
         const addedOffers   = newOffers.filter(o => !oldOffers.includes(o));
-        const removedOffers = oldOffers.filter(o => !newOffers.includes(o));
         if (addedOffers.length) {
-          alertParts.push("🆕 *Naye Bank Offers:*\n" + addedOffers.map(o => `• ${o}`).join("\n"));
-          track.offers = newOffers;
-        }
-        if (removedOffers.length) {
-          alertParts.push("⛔ *Removed Offers:*\n" + removedOffers.map(o => `• ${o}`).join("\n"));
+          alertParts.push("🆕 *Naye Bank Offers Paaye Gaye:*\n" + addedOffers.map(o => `• ${o}`).join("\n"));
           track.offers = newOffers;
         }
 
@@ -443,5 +435,4 @@ async function checkPrices() {
 }
 
 setInterval(checkPrices, CHECK_INTERVAL);
-console.log("🤖 Flipkart Price Alert Bot running...");
-console.log(`✅ Checking every ${CHECK_INTERVAL / 1000}s`);
+console.log("🤖 Flipkart Price Alert Bot running flawlessly...");
