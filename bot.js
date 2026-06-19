@@ -5,8 +5,9 @@ const fs = require("fs-extra");
 const path = require("path");
 const http = require("http");
 
-const BOT_TOKEN = "8499624263:AAEQuPqkuqzKbb8Bq6P8jttROkqK9zGq0Lg";
-const ADMIN_ID = 7485181331;
+// ─── Configuration ────────────────────────────────────────────────────────────
+const BOT_TOKEN = process.env.BOT_TOKEN || "8499624263:AAEQuPqkuqzKbb8Bq6P8jttROkqK9zGq0Lg";
+const ADMIN_ID = "7485181331"; 
 const DATA_FILE = path.join(__dirname, "data.json");
 const CHECK_INTERVAL = 15000;
 
@@ -39,16 +40,17 @@ function saveData(d) { fs.writeJsonSync(DATA_FILE, d, { spaces: 2 }); }
 let db = loadData();
 function persist() { saveData(db); }
 
-// ─── Flipkart Scraper ─────────────────────────────────────────────────────────
+// ─── Flipkart Scraper (New Card Grid + JSON Carousel Parsing) ─────────────────
 async function scrapeFlipkart(url) {
   try {
     const cleanUrl = url.split("?")[0];
     const { data } = await axios.get(cleanUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept-Language": "en-IN,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
       },
       timeout: 20000,
     });
@@ -64,8 +66,6 @@ async function scrapeFlipkart(url) {
 
     // ── Price ─────────────────────────────────────────────────────────────
     let price = null;
-
-    // Method 1: JSON-LD
     $('script[type="application/ld+json"]').each((_, el) => {
       if (price) return;
       try {
@@ -78,15 +78,8 @@ async function scrapeFlipkart(url) {
       } catch (_) {}
     });
 
-    // Method 2: CSS Classes
     if (!price) {
-      const priceClasses = [
-        "div.Nx9bqj.CxhGGd", "div.Nx9bqj",
-        "div._30jeq3._16Jk6d", "div._30jeq3",
-        "div.aBc1ts", "div.CEmiEU", "div._16Jk6d",
-        "div.dyC4hf", "div._25b18c ._30jeq3",
-        "div.UOCQB1 ._30jeq3", "span._1_WHN1", "div._3tbKJL",
-      ];
+      const priceClasses = ["div.Nx9bqj.CxhGGd", "div.Nx9bqj", "div._30jeq3._16Jk6d", "div._30jeq3"];
       for (const sel of priceClasses) {
         const el = $(sel).first();
         if (el.length) {
@@ -97,52 +90,83 @@ async function scrapeFlipkart(url) {
       }
     }
 
-    // Method 3: JSON in page
-    if (!price) {
-      const matches = data.match(/"price"\s*:\s*"?([\d,]+)"?/g);
-      if (matches) {
-        for (const m of matches) {
-          const num = m.match(/([\d,]+)/);
-          if (num) {
-            const p = parseInt(num[1].replace(/,/g, ""));
-            if (p > 100 && p < 10000000) { price = p; break; }
-          }
-        }
-      }
-    }
-
-    // Method 4: Regex fallback
-    if (!price) {
-      const m = data.match(/₹\s?([\d,]{4,})/);
-      if (m) price = parseInt(m[1].replace(/,/g, ""));
-    }
-
     // ── Stock Status ──────────────────────────────────────────────────────
     let inStock = true;
     const bodyText = $("body").text().toLowerCase();
     for (const txt of ["currently unavailable", "out of stock", "notify me", "sold out"]) {
       if (bodyText.includes(txt)) { inStock = false; break; }
     }
-    $('script[type="application/ld+json"]').each((_, el) => {
-      try {
-        const json = JSON.parse($(el).html());
-        if ((json.offers?.availability || "").includes("OutOfStock")) inStock = false;
-      } catch (_) {}
-    });
 
-    // ── Bank Offers ───────────────────────────────────────────────────────
+    // ── Bank Offers Discount & Bank Name Matcher ──────────────────────────
     const offers = [];
     const seen = new Set();
-    $("li, div._3lK0oN, div.yBYrE2").each((_, el) => {
-      const txt = $(el).text().replace(/\s+/g, " ").trim();
-      if (
-        /bank|hdfc|sbi|icici|axis|kotak|rbl|yes bank|cashback|discount|emi|instant|offer/i.test(txt) &&
-        txt.length > 15 && txt.length < 250 && !seen.has(txt)
-      ) {
-        seen.add(txt);
-        if (offers.length < 8) offers.push(txt.substring(0, 180));
+
+    // METHOD 1: Grid Cards Extraction (Jo screen par dikh rahe hain)
+    // Har ek dabba ya container jo discount block hold karta hai
+    $("div[style*='border'], div.x4v21B, div.XQD77V, li.XscZ69, div._1AtVbE").each((_, el) => {
+      let blockText = $(el).text().replace(/\s+/g, " ").trim();
+      
+      // Agar block me Apply likha hai aur koi bank/upi ka naam hai
+      if (/bank|axis|sbi|icici|hdfc|kotak|rbl|paytm|upi|cashback|discount/i.test(blockText)) {
+        // Faltu words filter karke saaf suthra discount text banate hain
+        let clean = blockText
+          .replace(/Apply|T&C|🛒|>/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        // Regex check: Kam se kam numeric discount ya percentage text hona chaiye block me
+        if (/(₹[\d,]+|[0-9]+%)\s*(off|discount|cashback)/i.test(clean) && clean.length > 10 && clean.length < 140) {
+          if (!seen.has(clean) && offers.length < 8) {
+            seen.add(clean);
+            offers.push(clean);
+          }
+        }
       }
     });
+
+    // METHOD 2: Back-end Script State Scanner (Bypass for Hidden Left-Swipe Items)
+    // Agar elements upar se kam mile toh direct backend script window variables ko nichodenge
+    $('script').each((_, el) => {
+      const scriptContent = $(el).html();
+      if (scriptContent && scriptContent.includes('window.__INITIAL_STATE__')) {
+        // Pure text string me se un blocks ko target karo jo "text":"..." pattern me hain
+        const matches = scriptContent.match(/"text"\s*:\s*"([^"]*(?:Bank|Discount|Cashback|Off)[^"]*)"/gi);
+        if (matches) {
+          matches.forEach(rawObj => {
+            const valMatch = rawObj.match(/"text"\s*:\s*"([^"]+)"/i);
+            if (valMatch && valMatch[1]) {
+              let textVal = valMatch[1].trim();
+              // Validate dynamic string structures (e.g., "₹6395 Off on Flipkart Axis Bank Credit Card")
+              if (
+                /(₹[\d,]+|[0-9]+%)\s*(off|discount|cashback)/i.test(textVal) && 
+                /axis|sbi|icici|hdfc|kotak|paytm|upi|bob|onecard/i.test(textVal) &&
+                textVal.length > 12 && textVal.length < 160
+              ) {
+                if (!seen.has(textVal) && offers.length < 8) {
+                  seen.add(textVal);
+                  offers.push(textVal);
+                }
+              }
+            }
+          });
+        }
+      }
+    });
+
+    // METHOD 3: Global Regex Fallback (Agar dono upar ke methods clean array na dein)
+    if (offers.length === 0) {
+      const globalRegex = /(₹[\d,]+\s*off\s(?:on\s)?[a-zA-Z\s]+Bank|[0-9]+%\s*Instant\s*Discount\son\s[a-zA-Z\s]+Bank)/gi;
+      const globalMatches = data.match(globalRegex);
+      if (globalMatches) {
+        globalMatches.forEach(m => {
+          let cleanStr = m.replace(/[\n\r]+/g, " ").trim();
+          if (!seen.has(cleanStr) && offers.length < 6) {
+            seen.add(cleanStr);
+            offers.push(cleanStr);
+          }
+        });
+      }
+    }
 
     return { name, price, offers, inStock };
   } catch (err) {
@@ -167,19 +191,38 @@ const adminMenu = {
     inline_keyboard: [
       [{ text: "📥 Pending Requests", callback_data: "admin_pending" }],
       [{ text: "✅ Approved Users",   callback_data: "admin_approved" }],
+      [{ text: "📱 Go to Tracking Menu", callback_data: "back_main" }]
     ],
   },
 };
 
 const waitingForUrl = new Set();
 
+function getKeyboardForUser(uid) {
+  if (uid === ADMIN_ID) {
+    return {
+      reply_markup: {
+        inline_keyboard: [
+          ...mainMenu.reply_markup.inline_keyboard,
+          [{ text: "👑 Admin Control Panel", callback_data: "admin_back" }]
+        ]
+      }
+    };
+  }
+  return mainMenu;
+}
+
 // ─── /start ───────────────────────────────────────────────────────────────────
 bot.onText(/\/start/, async (msg) => {
   const uid  = String(msg.from.id);
   const user = msg.from;
 
-  if (parseInt(uid) === ADMIN_ID) {
-    return bot.sendMessage(ADMIN_ID, "👑 *Admin Panel*\n\nWelcome back, Boss!",
+  if (uid === ADMIN_ID) {
+    if (!db.approved.includes(uid)) {
+      db.approved.push(uid);
+      persist();
+    }
+    return bot.sendMessage(ADMIN_ID, "👑 *Admin Panel*\n\nWelcome back, Boss! Aap yahan se authorization handle kar sakte hain aur tracking dashboard par ja sakte hain.",
       { parse_mode: "Markdown", ...adminMenu });
   }
 
@@ -219,7 +262,7 @@ bot.on("callback_query", async (q) => {
   bot.answerCallbackQuery(q.id).catch(() => {});
 
   if (cb.startsWith("approve_")) {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     const target = cb.split("_")[1];
     if (!db.approved.includes(target)) db.approved.push(target);
     delete db.pending[target];
@@ -233,7 +276,7 @@ bot.on("callback_query", async (q) => {
   }
 
   if (cb.startsWith("reject_")) {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     const target = cb.split("_")[1];
     delete db.pending[target];
     persist();
@@ -244,7 +287,7 @@ bot.on("callback_query", async (q) => {
   }
 
   if (cb === "admin_pending") {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     if (!Object.keys(db.pending).length)
       return bot.editMessageText("📭 No pending requests.", { chat_id: cid, message_id: mid, ...adminMenu });
     let text = "📥 *Pending Requests:*\n\n";
@@ -264,7 +307,7 @@ bot.on("callback_query", async (q) => {
   }
 
   if (cb === "admin_approved") {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     const text = db.approved.length
       ? "✅ *Approved Users:*\n\n" + db.approved.map(u => `\`${u}\``).join("\n")
       : "📭 No approved users yet.";
@@ -275,25 +318,26 @@ bot.on("callback_query", async (q) => {
   }
 
   if (cb === "admin_back") {
-    if (parseInt(uid) !== ADMIN_ID) return;
+    if (uid !== ADMIN_ID) return;
     return bot.editMessageText("👑 *Admin Panel*",
       { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...adminMenu });
   }
 
-  if (!db.approved.includes(uid) && parseInt(uid) !== ADMIN_ID)
+  if (!db.approved.includes(uid) && uid !== ADMIN_ID)
     return bot.answerCallbackQuery(q.id, { text: "⛔ Access denied.", show_alert: true });
 
   if (cb === "add_track") {
     waitingForUrl.add(uid);
-    return bot.editMessageText("🔗 *Product URL Bhejo*\n\nFlipcart product ka link paste karo:",
+    return bot.editMessageText("🔗 *Product URL Bhejo*\n\nFlipkart product ka link paste karo:",
       { chat_id: cid, message_id: mid, parse_mode: "Markdown" });
   }
 
   if (cb === "list_tracks") {
     const ut = db.tracks[uid] || [];
+    const currentKeyboard = getKeyboardForUser(uid);
     if (!ut.length)
       return bot.editMessageText("📭 Koi active track nahi hai.",
-        { chat_id: cid, message_id: mid, ...mainMenu });
+        { chat_id: cid, message_id: mid, ...currentKeyboard });
     let text = "📋 *Active Tracks:*\n\n";
     ut.forEach((t, i) => {
       const ps    = t.price ? `₹${t.price.toLocaleString("en-IN")}` : "N/A";
@@ -301,14 +345,15 @@ bot.on("callback_query", async (q) => {
       text += `${i + 1}. *${t.name}*\n   💰 Price: ${ps} | ${stock}\n\n`;
     });
     return bot.editMessageText(text,
-      { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...mainMenu });
+      { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...currentKeyboard });
   }
 
   if (cb === "remove_menu") {
     const ut = db.tracks[uid] || [];
+    const currentKeyboard = getKeyboardForUser(uid);
     if (!ut.length)
       return bot.editMessageText("📭 Koi track nahi hai.",
-        { chat_id: cid, message_id: mid, ...mainMenu });
+        { chat_id: cid, message_id: mid, ...currentKeyboard });
     const btns = ut.map((t, i) => [{
       text: `🗑️ ${t.name.substring(0, 40)}`,
       callback_data: `del_${i}`,
@@ -323,18 +368,20 @@ bot.on("callback_query", async (q) => {
   if (cb.startsWith("del_")) {
     const idx = parseInt(cb.split("_")[1]);
     const ut  = db.tracks[uid] || [];
+    const currentKeyboard = getKeyboardForUser(uid);
     if (idx >= 0 && idx < ut.length) {
       const [removed] = ut.splice(idx, 1);
       db.tracks[uid] = ut;
       persist();
       return bot.editMessageText(`✅ *${removed.name}* remove ho gaya!`,
-        { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...mainMenu });
+        { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...currentKeyboard });
     }
   }
 
   if (cb === "back_main") {
+    const currentKeyboard = getKeyboardForUser(uid);
     return bot.editMessageText("✅ *Flipkart Price Alert Bot*\n\nKya track karna hai?",
-      { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...mainMenu });
+      { chat_id: cid, message_id: mid, parse_mode: "Markdown", ...currentKeyboard });
   }
 });
 
@@ -344,20 +391,21 @@ bot.on("message", async (msg) => {
   const uid  = String(msg.from.id);
   const text = msg.text.trim();
 
-  if (!db.approved.includes(uid) && parseInt(uid) !== ADMIN_ID)
+  if (!db.approved.includes(uid) && uid !== ADMIN_ID)
     return bot.sendMessage(uid, "⛔ Access denied. Admin approval pending.");
+
+  const currentKeyboard = getKeyboardForUser(uid);
 
   if (waitingForUrl.has(uid)) {
     if (!text.includes("flipkart.com"))
       return bot.sendMessage(uid, "❌ Valid Flipkart URL bhejo bhai!");
 
     waitingForUrl.delete(uid);
-    const loadMsg = await bot.sendMessage(uid, "⏳ Product check ho raha hai...");
+    const loadMsg = await bot.sendMessage(uid, "⏳ Discount patterns aur bank specific offers scan ho rahe hain...");
     const { name, price, offers, inStock } = await scrapeFlipkart(text);
 
     if (!name)
-      return bot.editMessageText("❌ Product fetch nahi ho paya. URL check karo.",
-        { chat_id: uid, message_id: loadMsg.message_id });
+      return bot.sendMessage(uid, "❌ Product fetch nahi ho paya. URL check karo.");
 
     if (!db.tracks[uid]) db.tracks[uid] = [];
     db.tracks[uid].push({ url: text, name, price, offers, inStock });
@@ -365,17 +413,20 @@ bot.on("message", async (msg) => {
 
     const ps       = price ? `₹${price.toLocaleString("en-IN")}` : "N/A";
     const stockStr = inStock === false ? "❌ Out of Stock" : "✅ In Stock";
+    
+    // Yahan saare discrete dynamic structured discounts render honge
     const offerStr = offers.length
       ? offers.map(o => `• ${o}`).join("\n")
-      : "No bank offers found";
+      : "⚠️ Koi dynamic bank offers block me parse nahi ho paaye.";
 
-    return bot.editMessageText(
-      `✅ *Tracking Started!*\n\n📦 ${name}\n💰 Current Price: *${ps}*\n📦 Stock: ${stockStr}\n\n🏦 Bank Offers:\n${offerStr}\n\n_Har 15 sec mein check hoga!_`,
-      { chat_id: uid, message_id: loadMsg.message_id, parse_mode: "Markdown", ...mainMenu }
+    return bot.sendMessage(
+      uid,
+      `✅ *Tracking Started!*\n\n📦 *${name}*\n💰 Current Price: *${ps}*\n📦 Stock: ${stockStr}\n\n🏦 *Active Bank Offers & Discounts:* \n${offerStr}\n\n_Har 15 sec mein price change check hoga!_`,
+      { parse_mode: "Markdown", ...currentKeyboard }
     );
   }
 
-  bot.sendMessage(uid, "👋 Menu ke liye /start use karo.", mainMenu);
+  bot.sendMessage(uid, "👋 Menu use karne ke liye neeche diye gaye active buttons par click karein.", currentKeyboard);
 });
 
 // ─── Background Checker ───────────────────────────────────────────────────────
@@ -416,13 +467,8 @@ async function checkPrices() {
         }
 
         const addedOffers   = newOffers.filter(o => !oldOffers.includes(o));
-        const removedOffers = oldOffers.filter(o => !newOffers.includes(o));
         if (addedOffers.length) {
-          alertParts.push("🆕 *Naye Bank Offers:*\n" + addedOffers.map(o => `• ${o}`).join("\n"));
-          track.offers = newOffers;
-        }
-        if (removedOffers.length) {
-          alertParts.push("⛔ *Removed Offers:*\n" + removedOffers.map(o => `• ${o}`).join("\n"));
+          alertParts.push("🆕 *Naye Bank Offers Paaye Gaye:*\n" + addedOffers.map(o => `• ${o}`).join("\n"));
           track.offers = newOffers;
         }
 
@@ -443,5 +489,4 @@ async function checkPrices() {
 }
 
 setInterval(checkPrices, CHECK_INTERVAL);
-console.log("🤖 Flipkart Price Alert Bot running...");
-console.log(`✅ Checking every ${CHECK_INTERVAL / 1000}s`);
+console.log("🤖 Flipkart Price Alert Bot initialization clear...");
